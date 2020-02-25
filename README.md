@@ -1,1 +1,1 @@
-# k8s-sample-ui
+# UI service of Microservices Reddit application
