@@ -5,30 +5,27 @@ stages:
   - deploy
 
 variables:
-  # GKE info
-  CLUSTER_NAME: my-cluster
-  ZONE: europe-west1-b
-  PROJECT: example-123456
-  DOMAIN_NAME: devops-by-practice.fun # application domain name
+  DOMAIN_NAME_PROD: raddit.app.com # application domain name
+  DOMAIN_NAME_STAGE: raddit.app.stg # application domain name
 
   CHART_PATH: ./charts/ui
-  CONTAINER_IMAGE: artemkin/ui
+  CONTAINER_IMAGE: victorfrag/k8s-sample-ui
   CONTAINER_IMAGE_BUILT: ${CONTAINER_IMAGE}:${CI_COMMIT_REF_SLUG}_${CI_COMMIT_SHA}
   CONTAINER_IMAGE_LATEST: ${CONTAINER_IMAGE}:latest
   CI_REGISTRY: index.docker.io  # container registry URL
   DOCKER_DRIVER: overlay2
   DOCKER_HOST: tcp://localhost:2375  # required since we use dind
+  DOCKER_TLS_CERTDIR: ""
 
-  SERVICE_ACCOUNT: /etc/deploy/sa.json
-  STAGE_NAMESPACE: raddit-stage
-  PROD_NAMESPACE: raddit-prod
+  STAGE_NAMESPACE: staging
+  PROD_NAMESPACE: prod
   STAGE_RELEASE_NAME: raddit-stage-ui
   PROD_RELEASE_NAME: raddit-prod-ui
 
 # build container image
 build:
   stage: build
-  image: docker:latest
+  image: gitlab/dind
   services:
   - docker:dind
   script:
@@ -42,6 +39,7 @@ build:
 test:
   stage: test
   script:
+    - echo "Run test cases"
     - exit 0
 
 # tag container image that passed the tests successfully
@@ -57,9 +55,9 @@ release:
     - echo "Logging to Container Registry at ${CI_REGISTRY}"
     - docker login -u ${CI_REGISTRY_USER} -p ${CI_REGISTRY_PASSWORD}
     - echo "Pushing to Container Registry..."
-    - docker tag ${CONTAINER_IMAGE_BUILT} ${CONTAINER_IMAGE}:$(cat VERSION)
-    - docker push ${CONTAINER_IMAGE}:$(cat VERSION)
-    - docker tag ${CONTAINER_IMAGE}:$(cat VERSION) ${CONTAINER_IMAGE_LATEST}
+    - docker tag ${CONTAINER_IMAGE_BUILT} ${CONTAINER_IMAGE}:$(cat VERSION | tr -d '\r')
+    - docker push ${CONTAINER_IMAGE}:$(cat VERSION | tr -d '\r')
+    - docker tag ${CONTAINER_IMAGE}:$(cat VERSION | tr -d '\r') ${CONTAINER_IMAGE_LATEST}
     - docker push ${CONTAINER_IMAGE_LATEST}
     - echo ""
   only:
@@ -68,18 +66,15 @@ release:
 # deploy to staging environment
 deploy_staging:
   stage: deploy
-  image: artemkin/helm-gke:1.0
+  image: victorfrag/docker-helm:v2.14.3
   before_script:
-    - mkdir -p /etc/deploy
-    - echo ${service_account} | base64 -d > ${SERVICE_ACCOUNT}
-    - gcloud auth activate-service-account --key-file ${SERVICE_ACCOUNT}
-    - gcloud container clusters get-credentials ${CLUSTER_NAME} --zone ${ZONE} --project ${PROJECT}
     - helm init --client-only
   script:
     - helm upgrade --install
-      --set image.tag=$(cat VERSION)
-      --set ingress.enabled=false
+      --set image.tag=$(cat VERSION | tr -d '\r')
+      --set ingress.enabled=true
       --set image.repository=${CONTAINER_IMAGE}
+      --set ingress.hosts[0]=${DOMAIN_NAME_STAGE}
       --wait
       --namespace=${STAGE_NAMESPACE}
        ${STAGE_RELEASE_NAME} ${CHART_PATH}
@@ -91,25 +86,19 @@ deploy_staging:
 # deploy to production environment (manual)
 deploy_prod:
   stage: deploy
-  image: artemkin/helm-gke:1.0
+  image: victorfrag/docker-helm:v2.14.3
   before_script:
-    - mkdir -p /etc/deploy
-    - echo ${service_account} | base64 -d > ${SERVICE_ACCOUNT}
-    - gcloud auth activate-service-account --key-file ${SERVICE_ACCOUNT}
-    - gcloud container clusters get-credentials ${CLUSTER_NAME} --zone ${ZONE} --project ${PROJECT}
     - helm init --client-only
   script:
-    - helm upgrade --install
-      --set image.tag=$(cat VERSION)
+    - helm upgrade --install 
+      --set image.tag=$(cat VERSION | tr -d '\r')
       --set image.repository=${CONTAINER_IMAGE}
-      --set ingress.hosts[0]=${DOMAIN_NAME}
-      --set ingress.tls[0].secretName=ui-tls,ingress.tls[0].hosts={${DOMAIN_NAME}}
-      --wait
-      --namespace=${PROD_NAMESPACE}
+      --set ingress.hosts[0]=${DOMAIN_NAME_PROD}
+      --wait --namespace=${PROD_NAMESPACE}
       ${PROD_RELEASE_NAME} ${CHART_PATH}
   environment:
     name: production
-    url: https://${DOMAIN_NAME}
+    url: http://${DOMAIN_NAME_PROD}
   when: manual
   only:
   - master
